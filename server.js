@@ -1,24 +1,36 @@
-// server.js (36小時預報搞笑版)
+// server.js (修正 Cannot GET / 的版本)
 require("dotenv").config();
 const express = require("express");
-const cors = require("cors");
+const cors =require("cors");
 const axios = require("axios");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 const CWA_API_BASE_URL = "https://opendata.cwa.gov.tw/api";
-const CWA_API_KEY = process.env.CWA_API_KEY; // 請務必在 Zeabur 設定此環境變數
+const CWA_API_KEY = process.env.CWA_API_KEY;
 
 app.use(cors( ));
 app.use(express.json());
 
-// 地區名稱的對應
 const locationMap = {
   "taipei": "臺北市",
   "new-taipei": "新北市",
   "tainan": "臺南市",
 };
+
+// 【增加這一段】處理根路徑的請求
+app.get('/', (req, res) => {
+  res.status(200).json({
+    message: "歡迎來到搞笑天氣預報 API！",
+    status: "正常運作中...大概吧？",
+    endpoints: [
+      "/api/weather/taipei",
+      "/api/weather/new-taipei",
+      "/api/weather/tainan"
+    ]
+  });
+});
 
 const getWeatherForecast = async (req, res) => {
   try {
@@ -33,7 +45,6 @@ const getWeatherForecast = async (req, res) => {
       return res.status(400).json({ success: false, error: "這是哪？我沒聽過這個地方！" });
     }
 
-    // 使用「一般天氣預報-今明36小時天氣預報」
     const response = await axios.get(
       `${CWA_API_BASE_URL}/v1/rest/datastore/F-C0032-001`,
       {
@@ -44,7 +55,6 @@ const getWeatherForecast = async (req, res) => {
       }
     );
 
-    // --- 核心翻譯邏輯開始 ---
     const locationData = response.data.records.location[0];
     if (!locationData) {
       return res.status(404).json({ success: false, error: `找不到 ${locationName} 的資料` });
@@ -52,7 +62,7 @@ const getWeatherForecast = async (req, res) => {
 
     const weatherElements = locationData.weatherElement;
     const forecasts = [];
-    const timePeriods = weatherElements[0].time.length; // 通常是 3 個時間段
+    const timePeriods = weatherElements[0].time.length;
 
     for (let i = 0; i < timePeriods; i++) {
       const forecast = {
@@ -67,13 +77,13 @@ const getWeatherForecast = async (req, res) => {
             forecast.weather = param.parameterName;
             break;
           case "PoP":
-            forecast.rain = param.parameterName; // 單位是 %
+            forecast.rain = param.parameterName;
             break;
           case "MinT":
-            forecast.minTemp = param.parameterName; // 單位是 C
+            forecast.minTemp = param.parameterName;
             break;
           case "MaxT":
-            forecast.maxTemp = param.parameterName; // 單位是 C
+            forecast.maxTemp = param.parameterName;
             break;
           case "CI":
             forecast.comfort = param.parameterName;
@@ -82,7 +92,6 @@ const getWeatherForecast = async (req, res) => {
       });
       forecasts.push(forecast);
     }
-    // --- 核心翻譯邏輯結束 ---
 
     res.json({
       success: true,
@@ -99,6 +108,15 @@ const getWeatherForecast = async (req, res) => {
 };
 
 app.get("/api/weather/:location", getWeatherForecast);
+
+// 404 處理：如果請求的路徑都不是上面設定的，就會跑到這裡
+app.use((req, res) => {
+  res.status(404).json({
+    error: `找不到你想要的「${req.path}」`,
+    message: "你是不是走錯路了？這裡什麼都沒有喔！"
+  });
+});
+
 
 app.listen(PORT, () => {
   console.log(`🚀 搞笑天氣預報伺服器已在 http://localhost:${PORT} 待命！` );
