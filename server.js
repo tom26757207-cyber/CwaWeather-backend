@@ -1,3 +1,4 @@
+// server.js (修改後的後端程式碼)
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
@@ -11,94 +12,83 @@ const CWA_API_BASE_URL = "https://opendata.cwa.gov.tw/api";
 const CWA_API_KEY = process.env.CWA_API_KEY;
 
 // Middleware
-app.use(cors());
+app.use(cors( ));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// 地區名稱到 CWA API 代碼的映射
+const locationMap = {
+  "taipei": "臺北市",
+  "new-taipei": "新北市",
+  "tainan": "臺南市",
+};
+
 /**
- * 取得高雄天氣預報
+ * 取得指定地區的未來一週天氣預報
  * CWA 氣象資料開放平臺 API
- * 使用「一般天氣預報-今明 36 小時天氣預報」資料集
+ * 使用「鄉鎮天氣預報-未來2天(逐3小時)及未來1週(逐12小時)」
  */
-const getKaohsiungWeather = async (req, res) => {
+const getWeatherForecast = async (req, res) => {
   try {
-    // 檢查是否有設定 API Key
     if (!CWA_API_KEY) {
-      return res.status(500).json({
-        error: "伺服器設定錯誤",
-        message: "請在 .env 檔案中設定 CWA_API_KEY",
-      });
+      return res.status(500).json({ error: "伺服器設定錯誤", message: "未設定 CWA_API_KEY" });
     }
 
-    // 呼叫 CWA API - 一般天氣預報（36小時）
+    const locationKey = req.params.location;
+    const locationName = locationMap[locationKey];
+
+    if (!locationName) {
+      return res.status(400).json({ error: "無效的地區", message: "請提供 taipei, new-taipei, 或 tainan" });
+    }
+
+    // 呼叫 CWA API - 未來一週天氣預報
     // API 文件: https://opendata.cwa.gov.tw/dist/opendata-swagger.html
     const response = await axios.get(
-      `${CWA_API_BASE_URL}/v1/rest/datastore/F-C0032-001`,
+      `${CWA_API_BASE_URL}/v1/rest/datastore/F-D0047-091`,
       {
         params: {
           Authorization: CWA_API_KEY,
-          locationName: "新北市",
+          locationName: locationName,
+          elementName: "Wx,PoP12h,T", // 天氣現象, 12小時降雨機率, 溫度
         },
       }
-    );
+     );
 
-    // 取得新北市的天氣資料
-    const locationData = response.data.records.location[0];
+    const locationData = response.data.records.locations[0].location[0];
 
     if (!locationData) {
-      return res.status(404).json({
-        error: "查無資料",
-        message: "無法取得新北市天氣資料",
-      });
+      return res.status(404).json({ error: "查無資料", message: `無法取得 ${locationName} 天氣資料` });
     }
 
     // 整理天氣資料
     const weatherData = {
       city: locationData.locationName,
-      updateTime: response.data.records.datasetDescription,
       forecasts: [],
     };
 
-    // 解析天氣要素
-    const weatherElements = locationData.weatherElement;
-    const timeCount = weatherElements[0].time.length;
+    const weatherElement = locationData.weatherElement;
+    const tempElement = weatherElement.find(e => e.elementName === "T");
+    const wxElement = weatherElement.find(e => e.elementName === "Wx");
+    const popElement = weatherElement.find(e => e.elementName === "PoP12h");
 
-    for (let i = 0; i < timeCount; i++) {
+    // CWA API 提供未來一週的資料，每 12 小時一筆。我們取 6 筆，即為 3 天。
+    for (let i = 0; i < 6; i++) {
+      // 只處理白天 (06:00) 和晚上 (18:00) 的資料
+      const startTime = tempElement.time[i * 2].startTime;
+      const endTime = tempElement.time[i * 2 + 1].endTime;
+      
+      // 由於溫度是每 3 小時，天氣現象是 12 小時，我們要對應好時間
+      // 這裡我們簡化處理，取 12 小時內的平均、最高、最低
+      const tempsInPeriod = tempElement.time.slice(i*4, (i+1)*4).map(t => parseInt(t.elementValue[0].value));
+      
       const forecast = {
-        startTime: weatherElements[0].time[i].startTime,
-        endTime: weatherElements[0].time[i].endTime,
-        weather: "",
-        rain: "",
-        minTemp: "",
-        maxTemp: "",
-        comfort: "",
-        windSpeed: "",
+        startTime: startTime,
+        endTime: endTime,
+        weather: wxElement.time[i].elementValue[0].value,
+        rain: popElement.time[i].elementValue[0].value,
+        minTemp: Math.min(...tempsInPeriod),
+        maxTemp: Math.max(...tempsInPeriod),
       };
-
-      weatherElements.forEach((element) => {
-        const value = element.time[i].parameter;
-        switch (element.elementName) {
-          case "Wx":
-            forecast.weather = value.parameterName;
-            break;
-          case "PoP":
-            forecast.rain = value.parameterName + "%";
-            break;
-          case "MinT":
-            forecast.minTemp = value.parameterName + "°C";
-            break;
-          case "MaxT":
-            forecast.maxTemp = value.parameterName + "°C";
-            break;
-          case "CI":
-            forecast.comfort = value.parameterName;
-            break;
-          case "WS":
-            forecast.windSpeed = value.parameterName;
-            break;
-        }
-      });
-
       weatherData.forecasts.push(forecast);
     }
 
@@ -106,61 +96,36 @@ const getKaohsiungWeather = async (req, res) => {
       success: true,
       data: weatherData,
     });
+
   } catch (error) {
     console.error("取得天氣資料失敗:", error.message);
-
     if (error.response) {
-      // API 回應錯誤
       return res.status(error.response.status).json({
         error: "CWA API 錯誤",
         message: error.response.data.message || "無法取得天氣資料",
-        details: error.response.data,
       });
     }
-
-    // 其他錯誤
-    res.status(500).json({
-      error: "伺服器錯誤",
-      message: "無法取得天氣資料，請稍後再試",
-    });
+    res.status(500).json({ error: "伺服器錯誤", message: "無法取得天氣資料" });
   }
 };
 
 // Routes
 app.get("/", (req, res) => {
-  res.json({
-    message: "歡迎使用 CWA 天氣預報 API",
-    endpoints: {
-      kaohsiung: "/api/weather/kaohsiung",
-      health: "/api/health",
-    },
-  });
+  res.json({ message: "歡迎使用天龍人天氣檢測器 API" });
 });
 
 app.get("/api/health", (req, res) => {
   res.json({ status: "OK", timestamp: new Date().toISOString() });
 });
 
-// 取得高雄天氣預報
-app.get("/api/weather/kaohsiung", getKaohsiungWeather);
-
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({
-    error: "伺服器錯誤",
-    message: err.message,
-  });
-});
+// 動態取得指定地區天氣預報
+app.get("/api/weather/:location", getWeatherForecast);
 
 // 404 handler
 app.use((req, res) => {
-  res.status(404).json({
-    error: "找不到此路徑",
-  });
+  res.status(404).json({ error: "找不到此路徑" });
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 伺服器運行已運作`);
-  console.log(`📍 環境: ${process.env.NODE_ENV || "development"}`);
+  console.log(`🚀 伺服器已啟動於 http://localhost:${PORT}` );
 });
